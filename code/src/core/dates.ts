@@ -46,6 +46,22 @@ export class DateOnly {
     return DateOnly.parse(String(low).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(remainder + 1).padStart(2, "0"));
   }
   subtractDays(days: number): DateOnly { return this.addDays(-days); }
+  calendarParts(): Readonly<{ year: number; month: number; day: number }> {
+    return Object.freeze({ year: Number(this.#text.slice(0, 4)), month: Number(this.#text.slice(5, 7)), day: Number(this.#text.slice(8, 10)) });
+  }
+  isMonthEnd(): boolean { const { year, month, day } = this.calendarParts(); return day === monthLengths(year)[month - 1]; }
+  /** Caller retains the original anchor; clipping a short month never changes it. */
+  addCalendarMonths(months: number, anchorDay: number, monthEnd = false): DateOnly {
+    if (!Number.isSafeInteger(months) || !Number.isSafeInteger(anchorDay) || anchorDay < 1 || anchorDay > 31) throw new Error("Invalid calendar month offset or anchor");
+    const parts = this.calendarParts();
+    const index = (parts.year - 1) * 12 + parts.month - 1 + months;
+    if (!Number.isSafeInteger(index) || index < 0 || index >= 9999 * 12) throw new Error("Date outside supported Gregorian years 0001–9999");
+    const year = Math.floor(index / 12) + 1;
+    const month = index % 12 + 1;
+    const length = monthLengths(year)[month - 1]!;
+    const day = monthEnd ? length : Math.min(anchorDay, length);
+    return DateOnly.parse(String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0"));
+  }
   toISODateString(): string { return this.#text; }
   valueOf(): never { throw new Error("Use explicit date comparison or serialization"); }
 }

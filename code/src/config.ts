@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Issue } from "./domain.js";
+import type { Issue, RecurrencePolicy } from "./domain.js";
 
 export const productionFiles = Object.freeze({
   requests: "requests.csv",
@@ -12,6 +12,16 @@ export const productionFiles = Object.freeze({
   images: "images.csv",
   exchange_rates: "exchange_rates.csv",
 } as const);
+
+// Provisional global policy; historical calibration uses recurrence-selection-v2.
+// Activity grace is a hypothesis, not an empirically validated cancellation rule.
+export const recurrencePolicy: RecurrencePolicy = Object.freeze({
+  version: "hybrid-extremes", grouping: "hybrid",
+  minimumExpenseObservations: 3, minimumIncomeObservations: 5,
+  dateToleranceDays: 0, recentWindow: 6, expenseMissedAllowance: 1, incomeMissedAllowance: 0,
+  expenseEstimator: "maximum", incomeEstimator: "minimum",
+  fixedToleranceNumerator: 1, fixedToleranceDenominator: 20, schedulePreference: "calendar_first",
+});
 
 function locateProjectRoot(): string {
   let directory = dirname(fileURLToPath(import.meta.url));

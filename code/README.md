@@ -1,6 +1,6 @@
-# Buy or Wait? — Slices 1 and 2
+# Buy or Wait? — Slices 1–3
 
-This package validates raw CSV structure and relationships, normalizes exact financial values, and reconstructs supplied financial state. **No affordability decision engine or prediction generator exists yet.**
+This package validates raw CSV structure and relationships, normalizes exact financial values, reconstructs supplied financial state, and evaluates historical recurrence candidates. **No affordability decision engine or final prediction generator exists yet.**
 
 ## Requirements and installation
 
@@ -14,6 +14,7 @@ npm --prefix code run check
 npm --prefix code run build
 npm --prefix code test
 npm --prefix code run test:ingestion
+npm --prefix code run test:recurrence
 ~~~
 
 The lockfile pins all dependency versions. Runtime dependencies are zod (schemas), csv-parse (CSV parsing), and decimal.js (exact money operations). Development dependencies are TypeScript 6 and Node 24 type definitions. Tests use node:test and node:assert/strict. Build before running tests or inspection commands. No AI credentials or network access are needed after dependencies are installed; a populated npm cache also permits npm --prefix code ci --offline --no-audit --no-fund.
@@ -73,16 +74,38 @@ Both commands use the same seven-file production reader. They report state count
 
 - Money has a private immutable decimal-string boundary. Each addition/subtraction uses precision sufficient for the maximum integer and fractional widths plus a carry margin; multiplication uses the sum of operand digit widths plus a margin. Decimal instances never leave core operations. This preserves finite decimal arithmetic without default-precision truncation. Currency-mismatched operations fail.
 - Signed money supports debit movements; raw profile/event amount fields remain non-negative. Exact serialization emits plain canonical decimal text. Fixed-scale serialization requires an explicit rounding mode. Round-down means mathematical floor, including negative values; it is not used for capacity calculations. Zero cannot serialize as negative zero.
-- DateOnly uses integer Gregorian day ordinals for years 0001–9999, with no timezone, system clock or locale parsing. Only whole-day arithmetic is provided.
+- DateOnly uses integer Gregorian day ordinals for years 0001–9999, with no timezone, system clock or locale parsing. Whole-day arithmetic and anchored calendar-month arithmetic are provided. Monthly callers retain the original day or explicit month-end anchor to avoid cumulative clipping drift.
 - FX uses source amount times the supplied directed settlement-date rate into the user's home currency. Same-currency amounts need no rate. Original and converted Money, source provenance, rate text/date and rate-row provenance are retained. Missing, reverse-only or non-unique rates block conversion; no reciprocal or date fallback exists. Missing foreign amounts can validate rate coverage without manufacturing an amount.
 - The profile balance is an unchanged snapshot. Prior settled cash is retained as history and never replayed. Supplied future settled/scheduled cash becomes dated facts/commitments. Pending debits are separate exposures, and pending credits/refunds remain unavailable claims. Failed/cancelled attempts have no cash fact. Non-cash/unrealized valuations remain non-cash; investment purchases and sales follow actual cash direction.
 - Pending-balance policy defaults explicitly to unknown; includes_holds and excludes_holds are represented without changing the snapshot. Same-day ordering and whether same-day settlements are in the snapshot remain unresolved. ID sorting is presentation order only.
 - Lifecycle groups reference records rather than copying them. Cancelled replacement, settled/pending refund, failed debt retry and investment valuation/sale patterns are recognized. Generic links remain ambiguous and never silently deduplicate debits. Cycles, self-links, cross-user links, duplicate identities/conflicting parents block reconstruction. A failed debt without a confirmed retry or a past scheduled obligation remains uncertain, with no invented future date.
 - Unresolved amounts never produce cash facts. Genuine supplied zero remains a resolved zero fact. Invalid amount text is rejected during ingestion.
 
+## Recurrence inspection and historical calibration
+
+~~~text
+npm --prefix code run inspect:recurrence -- --dataset ../dataset --request <request_id>
+npm --prefix code run backtest:recurrence -- --dataset ../dataset
+npm --prefix code run backtest:recurrence -- --dataset ../dataset --write-report
+~~~
+
+Recurrence uses only settled, resolved cash history strictly before the request date, with valid conversion provenance. Original source-currency observations determine cadence and amount behavior. Refunds, investments, pending/failed/cancelled attempts, unresolved values, ambiguous lifecycle components, unestablished income transfers, and generic bonus/commission/reimbursement/windfall purposes are excluded. A real reported zero remains an observation; absence never becomes zero. Raw message/image contents are not interpreted.
+
+Description, category and hybrid grouping policies are compared. Description normalization preserves digits and meaningful symbols. Variable-purpose category streams separate established fixed bills, and their matching signatures exclude those bills. Supported schedules are calendar-monthly with a retained day/month-end anchor or fixed intervals derived from actual gaps. Date deviations and recent cadence/amount changes are explicit diagnostics. Low-support, irregular, stale or uncertain income is never presented as supported future income; expenses may retain conservative ambiguity. Supplied future commitments are separate references, never training observations or additional generated cash movements.
+
+The backtester is a separate evaluation executable. The existing TypeScript project includes it through its recurrence tests' import, so the ordinary build compiles it without a second configuration. It uses the same seven-file production reader and never imports the structural audit. At each distinct availability date (later of posting and settlement), it recalculates eligibility and grouping from the prefix and expands that prefix. Predictions with unchanged support are evaluated once. A withheld target's eligibility is frozen when it becomes available; later lifecycle links cannot censor earlier training or retrospectively remove a scored target. Same-date observations are exposed together; this is a training boundary, not a financial movement-ordering policy.
+
+The command prints JSON with every predefined policy, exact fraction metrics, per-currency and direction monetary errors, exclusion counts, input/source hashes, and the selected global policy. Means and even-sample medians use reduced rational amounts when no finite decimal exists; they are never rounded into Money. Quantile ranks use integer arithmetic. Weighted relative error is absolute error divided by actual nonzero amount totals **within each currency and direction**, then averaged across currencies. It is not the mean of individual percentage errors. Monetary magnitudes in different currencies are never added. The prespecified recurrence-selection-v2 objective first minimizes unsafe income loss. It then minimizes four times unsafe expense loss, plus explicit over-reservation cost, unsafe date rate, coverage loss and one tenth unsupported rate. Unsafe loss includes amount error divided by actual amount and the unsafe prediction rate, so genuine zero is not ignored. Exact ties prefer lower documented complexity, higher coverage/date accuracy, then lexicographic version. Support below three expense/five income observations and income grace periods are inadmissible. Apparent end-continuations are censored at the request boundary and are not proven cancellations.
+
+The optional --write-report flag regenerates evaluation/recurrence_report.md from the current implementation and inputs. It includes raw-byte SHA-256 manifests, Git reference when available, runtime, the command, all candidate metrics, selection rationale and limitations. The renderer has no clock or hand-entered metrics; identical source/inputs/runtime/Git reference yield identical bytes. Normal backtesting writes no report. Rebuild after source changes before generating the report. Coverage counts observations eligible when historically available; request-snapshot eligible/exclusion counts are reported separately, so later disputes cannot change that chronological denominator.
+
+The provisional policy is explicit in src/config.ts and has a deterministic SHA-256 hash. See evaluation/recurrence_report.md for measured comparisons, selection rationale, sensitivity, and uncertainties. Inspection emits only series metadata, counts and diagnostic next dates, not a cash-flow forecast. The policy estimatedAmount is the strict safety estimate; referenceAmount is a recent-window median explicitly tagged diagnostic_only and cannot establish feasibility. Activity is explicitly provisional, with cadence_only or uncertain confidence. Inactive and ambiguous income is ineligible; inactive/ambiguous expense remains must_review and cannot silently disappear. Diagnostic dates on ambiguous expense candidates may be overdue; downstream code must not treat them as confirmed commitments.
+
 ## Current limitations
 
-This package does not detect recurrence, estimate variable spending, forecast, simulate daily balances, calculate safe payment capacity, generate payment plans, classify affordability, extract evidence, or write predictions. Image validation does not decode PNGs. Readonly maps are a TypeScript API boundary rather than runtime immutable map implementations. Linux execution has not yet been verified directly.
+This package does not generate a 90-day forecast, simulate daily balances, calculate safe payment capacity, generate payment plans, classify affordability, extract evidence, score solved answers, or write final predictions. Image validation does not decode PNGs. Readonly maps are a TypeScript API boundary rather than runtime immutable map implementations. Linux execution has not yet been verified directly. Recurrence cannot establish cancellations, source continuity, or same-purpose amendments from unparsed evidence; source records do not provide historical revision timestamps.
+
+Non-blocking technical debt: Money's large accepted serialization scale/precision bounds must be reduced before an untrusted caller controls scale. Canonical payment options must expose method, payment count and frequency explicitly before Slice 5. Neither behavior is changed by this slice.
 
 The unused Python starter and evaluation files are preserved. Tests generate small isolated synthetic datasets in OS temporary directories and remove them afterward; the participant dataset is never modified. The isolation tests use unreadable sample/template locations and inspect the compiled production import graph.
 

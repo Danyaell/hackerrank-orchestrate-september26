@@ -7,6 +7,7 @@ import type { InspectionResult, Issue, TableName } from "./domain.js";
 import type { FinancialState, StateResult } from "./domain.js";
 import { normalizeData } from "./data/normalize.js";
 import { reconstructState } from "./finance/state.js";
+import { analyzeRecurrence, ExactRatio } from "./finance/recurrence.js";
 
 export function printReport(result: InspectionResult, mode: string, extraFiles: readonly string[] = []): void {
   console.log("Buy or Wait? — " + mode + " (raw structure only)");
@@ -107,13 +108,42 @@ export async function runStateInspection(args: readonly string[]): Promise<numbe
   return issues.some((issue) => issue.severity === "error") ? 1 : 0;
 }
 
+export async function runRecurrenceInspection(args: readonly string[]): Promise<number> {
+  const { datasetDirectory, requestId } = parseStateArguments(args, true);
+  const inspection = await buildIndexes(await loadProduction(datasetDirectory), datasetDirectory);
+  if (inspection.issues.some((issue) => issue.severity === "error")) { printReport(inspection, "blocking ingestion diagnostics"); return 1; }
+  const result = reconstructState(normalizeData(inspection), requestId!);
+  if (result.state === null) { printIssues(result.issues); return 1; }
+  const analysis = analyzeRecurrence(result.state);
+  console.log("Buy or Wait? — recurrence candidates only; no cash-flow forecast or decisions");
+  console.log("Runtime: " + process.version + "; policy=" + analysis.policyVersion + "; hash=" + analysis.policyHash);
+  console.log("Request: " + result.state.request.id + "; cutoff=" + result.state.request.date.toISODateString());
+  console.log("Eligible observations: " + analysis.observations.length + "; excluded records: " + analysis.exclusions.length + "; candidate series: " + analysis.series.length);
+  for (const series of analysis.series) console.log(JSON.stringify({
+    series_id: series.id, direction: series.direction, event_type: series.eventType, category: series.category, currency: series.currency,
+    grouping: series.groupingPolicy, supporting_count: series.observationCount, schedule: series.schedule.kind,
+    reference_amount: ExactRatio.fromAmount(series.referenceAmount).toFractionString(), reference_use: series.referenceAmountUse,
+    activity_policy: series.activityPolicy, activity_confidence: series.activityConfidence,
+    income_inference_eligible: series.incomeInferenceEligible, expense_continuity: series.expenseContinuity,
+    anchor_day: series.schedule.anchorDay, month_end: series.schedule.monthEnd, interval_days: series.schedule.intervalDays,
+    amount_model: series.amountModel, amount_behavior: series.amountBehavior, amount_exact_fraction: ExactRatio.fromAmount(series.estimatedAmount).toFractionString(),
+    next_occurrence: series.expectedNextOccurrence?.toISODateString() ?? null, status: series.status, support: series.support,
+    missed_occurrences: series.missedOccurrences, supplied_future_references: series.suppliedFutureEventIds, diagnostics: series.diagnostics,
+  }));
+  const reasons: Record<string, number> = {};
+  for (const exclusion of analysis.exclusions) for (const reason of exclusion.reasons) reasons[reason] = (reasons[reason] ?? 0) + 1;
+  console.log("Exclusion counts: " + JSON.stringify(Object.fromEntries(Object.entries(reasons).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))));
+  printIssues(result.issues);
+  return 0;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    process.exitCode = args[0] === "inspect-state" || args[0] === "inspect-states" ?
+    process.exitCode = args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
       await runStateInspection(args) : await runInspection(args);
   } catch {
-    console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect --dataset <directory>, inspect-state --dataset <directory> --request <id>, or inspect-states --dataset <directory>; ambiguous paths require an absolute path.");
+    console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect, inspect-state, inspect-states, or inspect-recurrence with --dataset <directory> and --request <id> where required; ambiguous paths require an absolute path.");
     process.exitCode = 1;
   }
 }

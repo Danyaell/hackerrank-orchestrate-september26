@@ -207,3 +207,59 @@ export interface StateResult {
   readonly state: FinancialState | null;
   readonly issues: readonly Issue[];
 }
+
+export type GroupingPolicy = "description" | "category" | "hybrid";
+export type AmountEstimator = "last" | "mean" | "median" | "recent_median" | "upper_quantile" | "lower_quantile" | "maximum" | "minimum";
+/** Exact rational for means/medians; repeating decimals are never silently rounded. */
+export interface RationalAmount { readonly numerator: string; readonly denominator: string; readonly currency: Currency }
+export interface RecurrencePolicy {
+  readonly version: string;
+  readonly grouping: GroupingPolicy;
+  readonly minimumExpenseObservations: number;
+  readonly minimumIncomeObservations: number;
+  readonly dateToleranceDays: number;
+  readonly recentWindow: number;
+  readonly expenseMissedAllowance: number;
+  readonly incomeMissedAllowance: number;
+  readonly expenseEstimator: AmountEstimator;
+  readonly incomeEstimator: AmountEstimator;
+  readonly fixedToleranceNumerator: number;
+  readonly fixedToleranceDenominator: number;
+  readonly schedulePreference: "calendar_first" | "fixed_first";
+}
+export interface RecurrenceObservation {
+  readonly eventId: string; readonly userId: string;
+  readonly direction: "debit" | "credit"; readonly eventType: FinancialEvent["event_type"];
+  readonly category: string; readonly description: string; readonly flexibility: FinancialEvent["flexibility"];
+  readonly amount: Money; readonly date: DateOnly; readonly source: Provenance;
+}
+export interface RecurrenceSchedule {
+  readonly kind: "calendar_monthly" | "fixed_interval_days" | "unsupported";
+  readonly anchorDay: number | null; readonly monthEnd: boolean;
+  readonly intervalDays: number | null;
+  readonly deviations: readonly number[];
+  readonly matchedGaps: number; readonly totalGaps: number;
+}
+export interface RecurrenceSeries {
+  readonly id: string; readonly userId: string; readonly direction: "debit" | "credit";
+  readonly eventType: FinancialEvent["event_type"]; readonly category: string; readonly currency: Currency;
+  readonly groupingPolicy: GroupingPolicy; readonly matchingSignature: string;
+  readonly supportingEventIds: readonly string[]; readonly provenance: readonly Provenance[];
+  readonly firstObservedDate: DateOnly; readonly lastObservedDate: DateOnly; readonly observationCount: number;
+  readonly schedule: RecurrenceSchedule; readonly amountModel: AmountEstimator | "fixed";
+  readonly amountBehavior: "fixed" | "stable_with_variation" | "variable";
+  readonly estimatedAmount: RationalAmount; readonly expectedNextOccurrence: DateOnly | null;
+  /** Reference estimate is never an input to financial feasibility or safety scoring. */
+  readonly referenceAmount: RationalAmount; readonly referenceAmountUse: "diagnostic_only";
+  readonly activityPolicy: "provisional"; readonly activityConfidence: "cadence_only" | "uncertain";
+  readonly incomeInferenceEligible: boolean; readonly expenseContinuity: "supported" | "must_review" | null;
+  readonly status: "active" | "inactive" | "ambiguous";
+  readonly support: "strong" | "supported" | "low" | "unsupported";
+  readonly missedOccurrences: number; readonly regimeChanged: boolean;
+  readonly suppliedFutureEventIds: readonly string[]; readonly diagnostics: readonly string[];
+}
+export interface RecurrenceExclusion { readonly eventId: string; readonly reasons: readonly string[]; readonly source: Provenance }
+export interface RecurrenceResult {
+  readonly policyVersion: string; readonly policyHash: string; readonly series: readonly RecurrenceSeries[];
+  readonly observations: readonly RecurrenceObservation[]; readonly exclusions: readonly RecurrenceExclusion[];
+}
