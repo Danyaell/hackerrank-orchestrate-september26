@@ -45,6 +45,21 @@ export function parseDatasetArgument(args: readonly string[]): string {
   return resolveDatasetDirectory(args[1]);
 }
 
+export function parseStateArguments(args: readonly string[], requireRequest: boolean): { datasetDirectory: string; requestId: string | null } {
+  let dataset: string | undefined;
+  let requestId: string | null = null;
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (value === undefined || value.trim() === "") throw new Error("Missing flag value");
+    if (flag === "--dataset" && dataset === undefined) dataset = value;
+    else if (flag === "--request" && requireRequest && requestId === null) requestId = value;
+    else throw new Error("Unknown or duplicate flag");
+  }
+  if (requireRequest && requestId === null) throw new Error("Expected --request <id>");
+  return { datasetDirectory: resolveDatasetDirectory(dataset), requestId };
+}
+
 export function sortIssues(issues: readonly Issue[]): readonly Issue[] {
   return Object.freeze([...issues].sort((a, b) => {
     const left = [a.filename, a.row ?? -1, a.field ?? "", a.code, a.recordId ?? "", a.explanation] as const;

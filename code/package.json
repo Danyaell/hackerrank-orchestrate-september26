@@ -9,10 +9,12 @@
   "scripts": {
     "check": "tsc --noEmit",
     "build": "tsc",
-    "test": "node --test dist/tests/ingestion.test.js",
+    "test": "node --test dist/tests/ingestion.test.js dist/tests/primitives.test.js dist/tests/state.test.js",
     "test:ingestion": "node --test dist/tests/ingestion.test.js",
     "inspect": "node dist/src/main.js inspect",
-    "audit": "node dist/src/audit.js audit"
+    "audit": "node dist/src/audit.js audit",
+    "inspect:state": "node dist/src/main.js inspect-state",
+    "inspect:states": "node dist/src/main.js inspect-states"
   },
   "dependencies": {
     "csv-parse": "7.0.2",
