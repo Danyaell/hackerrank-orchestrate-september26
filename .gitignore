@@ -1,0 +1,16 @@
+/log.txt
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+.venv/
+venv/
+__pycache__/
+.evidence-cache/
+evidence-cache/
+.cache/evidence/
+.packaging/
+packaging-temp/
+/output.csv
+/code.zip
