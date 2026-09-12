@@ -1,6 +1,6 @@
-# Buy or Wait? — Slices 1–3
+# Buy or Wait? — Slices 1–4
 
-This package validates raw CSV structure and relationships, normalizes exact financial values, reconstructs supplied financial state, and evaluates historical recurrence candidates. **No affordability decision engine or final prediction generator exists yet.**
+This package validates raw CSV structure and relationships, normalizes exact financial values, reconstructs supplied financial state, evaluates historical recurrence candidates, and constructs baseline financial forecasts and scenario traces. **No recommendation engine or final prediction generator exists yet.**
 
 ## Requirements and installation
 
@@ -15,6 +15,7 @@ npm --prefix code run build
 npm --prefix code test
 npm --prefix code run test:ingestion
 npm --prefix code run test:recurrence
+npm --prefix code run test:forecast
 ~~~
 
 The lockfile pins all dependency versions. Runtime dependencies are zod (schemas), csv-parse (CSV parsing), and decimal.js (exact money operations). Development dependencies are TypeScript 6 and Node 24 type definitions. Tests use node:test and node:assert/strict. Build before running tests or inspection commands. No AI credentials or network access are needed after dependencies are installed; a populated npm cache also permits npm --prefix code ci --offline --no-audit --no-fund.
@@ -101,9 +102,31 @@ The optional --write-report flag regenerates evaluation/recurrence_report.md fro
 
 The provisional policy is explicit in src/config.ts and has a deterministic SHA-256 hash. See evaluation/recurrence_report.md for measured comparisons, selection rationale, sensitivity, and uncertainties. Inspection emits only series metadata, counts and diagnostic next dates, not a cash-flow forecast. The policy estimatedAmount is the strict safety estimate; referenceAmount is a recent-window median explicitly tagged diagnostic_only and cannot establish feasibility. Activity is explicitly provisional, with cadence_only or uncertain confidence. Inactive and ambiguous income is ineligible; inactive/ambiguous expense remains must_review and cannot silently disappear. Diagnostic dates on ambiguous expense candidates may be overdue; downstream code must not treat them as confirmed commitments.
 
+## Baseline forecast and capacity diagnostics
+
+~~~text
+npm --prefix code run inspect:forecast -- --dataset ../dataset --request <request_id>
+npm --prefix code run inspect:capacity -- --dataset ../dataset --request <request_id>
+npm --prefix code run inspect:capacities -- --dataset ../dataset
+~~~
+
+These commands use the seven-file production boundary. They read no solved outputs, write no predictions, and accept arbitrary active request IDs. Forecast inspection reports movement identities, source references, suppression rationale and dated FX provenance; capacity inspection reports scenario minima, breach counts and limiting checkpoints. Full daily opening/closing balances, reservations, movements and checkpoints are available through the typed simulator API without exposing message or image content.
+
+The explicit `forecast-v1-inclusive-90` policy covers the request date through request date plus 90 calendar days, **inclusive (91 dates)**. Its configuration and deterministic hash are reported separately from the recurrence policy hash. No clock is consulted. Historical cash is never replayed against the profile snapshot. Supplied future cash identities are retained once. Supported active recurrence uses only the selected strict safety estimate; its reference median never enters feasibility calculations. Unsupported, stale or ambiguous income is excluded. Uncertain expenses retain provenance and structured unresolved obligations; missing debit amounts block capacity. A known undated debt may receive a conservative reserve but is never described as realized failed cash.
+
+Generated occurrences are suppressed only for a unique compatible supplied obligation at the same schedule date, with user, direction, event type, category, source currency, signature and description identity (or an explicit supporting-event relationship for a pooled stream). Category/date/amount similarity alone cannot suppress a movement. Compatible pending exposures also participate in this check. Supplied amounts take precedence over inference, and all suppression decisions remain inspectable. Multiple matches remain ambiguous rather than being arbitrarily merged.
+
+Both pending snapshot hypotheses and both same-day cash orders are simulated. When the snapshot includes a hold, its ledger receives an accounting gross-up matched by the reservation, creating **no spendable income**. When it excludes holds, reservations reduce spendable funds at the request boundary. Settlement releases the hold and debits it atomically, never exposing a temporary credit or charging it twice. A pending row's supplied date is tentative; that transition leaves spendable funds unchanged. Past/undated pending exposure remains held. A uniquely linked identical settlement can replace the tentative transition, while any unresolved lifecycle classification remains explicitly unresolved. Pending credits/refunds and unsettled speculative credits never add available funds. Same-day settled debits may already be in the snapshot; their conservative trace remains unresolved, and same-day settled credits are excluded.
+
+Scenario safety is checked at opening, after each ordered movement, and at closing. Diagnostic purchase debits occur after opening reserves **before any same-day cash**, in either intraday hypothesis. Stable IDs only break ties within a financial phase. Capacity takes the least headroom across valid scenarios and verifies that exact boundary through injected simulation. It is uncapped by requested price and receives no preference/deadline/spending-change filtering. It is never rounded upward. A baseline breach yields `unsafe`; missing values or FX yield `blocked`; unresolved liability identity/continuity yields `conservative_unresolved`. All three return no claimed safe capacity or earliest payment date.
+
+For valid baselines, earliest full-payment feasibility searches the inclusive horizon independently of preferences and deadline. A suffix-headroom check proves impossible dates unsafe; each remaining candidate receives full injected simulation across every scenario and every checkpoint. It can therefore return the following day after a credit, rather than relying on that credit arriving before the payment. Null on a blocked/unresolved baseline means unknown, not proven impossibility.
+
+The all-request command continues through every request, aggregates blockers and returns status 1 if any blocking error exists. Warning-only unresolved diagnostics return status 0 without claiming a safe result. Baseline-breach counts include breached traces even when blocked/unresolved takes status precedence. Pending sensitivity means the snapshot hypotheses change spendable traces; same-day sensitivity means they change at least one daily checkpoint minimum, even if the global limiting checkpoint is unchanged. Missing projected FX counts occurrences, not requests. Only strictly dated directed supplied FX is used; no live, latest-date or reciprocal fallback is available.
+
 ## Current limitations
 
-This package does not generate a 90-day forecast, simulate daily balances, calculate safe payment capacity, generate payment plans, classify affordability, extract evidence, score solved answers, or write final predictions. Image validation does not decode PNGs. Readonly maps are a TypeScript API boundary rather than runtime immutable map implementations. Linux execution has not yet been verified directly. Recurrence cannot establish cancellations, source continuity, or same-purpose amendments from unparsed evidence; source records do not provide historical revision timestamps.
+This package does not generate payment plans, expand installments, select payment methods, change spending, classify affordability, extract evidence, score solved answers, or write final predictions. Safety is conditional on the supplied facts and provisional recurrence policy, not a guarantee against unknown expenses. Unbounded liabilities remain unresolved. Image validation does not decode PNGs. Readonly maps are a TypeScript API boundary rather than runtime immutable map implementations. Linux execution has not yet been verified directly. Recurrence cannot establish cancellations, source continuity, or same-purpose amendments from unparsed evidence; source records do not provide historical revision timestamps.
 
 Non-blocking technical debt: Money's large accepted serialization scale/precision bounds must be reduced before an untrusted caller controls scale. Canonical payment options must expose method, payment count and frequency explicitly before Slice 5. Neither behavior is changed by this slice.
 

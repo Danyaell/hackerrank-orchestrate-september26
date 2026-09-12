@@ -263,3 +263,60 @@ export interface RecurrenceResult {
   readonly policyVersion: string; readonly policyHash: string; readonly series: readonly RecurrenceSeries[];
   readonly observations: readonly RecurrenceObservation[]; readonly exclusions: readonly RecurrenceExclusion[];
 }
+
+export type PendingScenario = "includes_holds" | "excludes_holds";
+export type SameDayOrder = "debits_before_credits" | "credits_before_debits";
+export interface ForecastIssue extends Issue {
+  readonly effect: "blocking" | "conservative_unresolved" | "informational";
+  readonly obligationId: string;
+  readonly provenance: readonly Provenance[];
+}
+export interface ForecastObligation {
+  readonly id: string; readonly knownAmount: Money | null; readonly date: DateOnly | null;
+  readonly sourceEventIds: readonly string[]; readonly seriesId: string | null;
+  readonly provenance: readonly Provenance[]; readonly reason: string;
+}
+export interface ForecastMovement {
+  readonly id: string; readonly date: DateOnly; readonly amount: Money; readonly original: Money;
+  readonly kind: "confirmed_future_commitment" | "generated_recurring_income" | "generated_recurring_expense" |
+    "pending_hold_transition" | "injected_diagnostic_payment" | "conservative_reserve";
+  readonly operation: "cash" | "hold_open" | "hold_settle" | "reserve_open";
+  readonly obligationId: string; readonly sourceEventIds: readonly string[]; readonly seriesId: string | null;
+  readonly fx: FxConversion | null; readonly confidence: "confirmed" | "supported" | "uncertain";
+  readonly evidenceState: "confirmed" | "inferred" | "ambiguous" | "unresolved";
+  readonly provenance: readonly Provenance[];
+  readonly deduplication: { readonly decision: "retained" | "suppressed"; readonly rationale: string; readonly matchedMovementId: string | null };
+}
+export interface FinancialForecast {
+  readonly requestId: string; readonly userId: string; readonly currency: Currency;
+  readonly start: DateOnly; readonly end: DateOnly; readonly policyVersion: string; readonly policyHash: string;
+  readonly recurrencePolicyHash: string;
+  readonly movements: readonly ForecastMovement[]; readonly suppressedMovements: readonly ForecastMovement[];
+  readonly unresolvedObligations: readonly ForecastObligation[]; readonly issues: readonly ForecastIssue[];
+  readonly excludedCreditEventIds: readonly string[];
+}
+export interface DiagnosticInjection { readonly id: string; readonly date: DateOnly; readonly amount: Money; readonly source: Provenance }
+export interface BalanceCheckpoint {
+  readonly id: string; readonly date: DateOnly; readonly phase: "opening" | "reserve" | "payment" | "cash" | "closing";
+  readonly ledgerBalance: Money; readonly heldAmount: Money; readonly spendableBalance: Money;
+  readonly movement: ForecastMovement | null; readonly margin: Money;
+}
+export interface DailyTrace {
+  readonly date: DateOnly; readonly openingBalance: Money; readonly openingSpendable: Money;
+  readonly heldAmount: Money; readonly spendableBalance: Money; readonly checkpoints: readonly BalanceCheckpoint[];
+  readonly closingBalance: Money; readonly minimumBalance: Money;
+}
+export interface SimulationTrace {
+  readonly requestId: string; readonly forecastPolicyHash: string; readonly pendingScenario: PendingScenario; readonly sameDayOrder: SameDayOrder;
+  readonly days: readonly DailyTrace[]; readonly checkpoints: readonly BalanceCheckpoint[];
+  readonly minimumCheckpoint: BalanceCheckpoint; readonly minimumBalance: Money;
+  readonly breaches: readonly BalanceCheckpoint[]; readonly issues: readonly Issue[];
+  readonly pendingAccounting: ReadonlyMap<string, { readonly opened: boolean; readonly settled: boolean }>;
+}
+export interface BaselineCapacity {
+  readonly status: "valid" | "unsafe" | "blocked" | "conservative_unresolved";
+  readonly maximumImmediatePayment: Money | null; readonly earliestFullPaymentDate: DateOnly | null;
+  readonly baselineTraces: readonly SimulationTrace[]; readonly limitingScenario: string; readonly limitingCheckpoint: BalanceCheckpoint;
+  readonly margin: Money; readonly issues: readonly Issue[];
+  readonly pendingSensitive: boolean; readonly sameDaySensitive: boolean;
+}

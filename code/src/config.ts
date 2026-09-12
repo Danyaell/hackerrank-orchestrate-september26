@@ -23,6 +23,13 @@ export const recurrencePolicy: RecurrencePolicy = Object.freeze({
   fixedToleranceNumerator: 1, fixedToleranceDenominator: 20, schedulePreference: "calendar_first",
 });
 
+export const forecastPolicy = Object.freeze({
+  version: "forecast-v1-inclusive-90", horizonDays: 90, inclusiveEnd: true,
+  pendingScenarios: Object.freeze(["includes_holds", "excludes_holds"] as const),
+  sameDayScenarios: Object.freeze(["debits_before_credits", "credits_before_debits"] as const),
+  paymentPhase: "after_opening_reserves_before_all_cash" as const,
+});
+
 function locateProjectRoot(): string {
   let directory = dirname(fileURLToPath(import.meta.url));
   while (!existsSync(resolve(directory, "package.json"))) {

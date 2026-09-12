@@ -9,7 +9,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "build": "tsc",
-    "test": "node --test dist/tests/ingestion.test.js dist/tests/primitives.test.js dist/tests/state.test.js dist/tests/recurrence.test.js",
+    "test": "node --test dist/tests/ingestion.test.js dist/tests/primitives.test.js dist/tests/state.test.js dist/tests/recurrence.test.js dist/tests/forecast.test.js",
     "test:ingestion": "node --test dist/tests/ingestion.test.js",
     "inspect": "node dist/src/main.js inspect",
     "audit": "node dist/src/audit.js audit",
@@ -17,7 +17,11 @@
     "inspect:states": "node dist/src/main.js inspect-states",
     "test:recurrence": "node --test dist/tests/recurrence.test.js",
     "backtest:recurrence": "node dist/evaluation/backtest.js",
-    "inspect:recurrence": "node dist/src/main.js inspect-recurrence"
+    "inspect:recurrence": "node dist/src/main.js inspect-recurrence",
+    "test:forecast": "node --test dist/tests/forecast.test.js",
+    "inspect:forecast": "node dist/src/main.js inspect-forecast",
+    "inspect:capacity": "node dist/src/main.js inspect-capacity",
+    "inspect:capacities": "node dist/src/main.js inspect-capacities"
   },
   "dependencies": {
     "csv-parse": "7.0.2",

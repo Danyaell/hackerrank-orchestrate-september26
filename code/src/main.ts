@@ -8,6 +8,8 @@ import type { FinancialState, StateResult } from "./domain.js";
 import { normalizeData } from "./data/normalize.js";
 import { reconstructState } from "./finance/state.js";
 import { analyzeRecurrence, ExactRatio } from "./finance/recurrence.js";
+import { buildForecast } from "./finance/forecast.js";
+import { calculateCapacity } from "./finance/capacity.js";
 
 export function printReport(result: InspectionResult, mode: string, extraFiles: readonly string[] = []): void {
   console.log("Buy or Wait? — " + mode + " (raw structure only)");
@@ -137,13 +139,75 @@ export async function runRecurrenceInspection(args: readonly string[]): Promise<
   return 0;
 }
 
+export async function runForecastInspection(args: readonly string[]): Promise<number> {
+  const all = args[0] === "inspect-capacities";
+  const { datasetDirectory, requestId } = parseStateArguments(args.slice(1), !all);
+  const inspection = await buildIndexes(await loadProduction(datasetDirectory), datasetDirectory);
+  if (inspection.issues.some((issue) => issue.severity === "error")) { printReport(inspection, "blocking ingestion diagnostics"); return 1; }
+  const normalized = normalizeData(inspection);
+  const ids = all ? [...normalized.requests.keys()].sort() : [requestId!];
+  const issues: Issue[] = [];
+  const counts: Record<string, number> = {
+    requests_processed: 0, valid_baseline_capacities: 0, baselines_already_below_minimum: 0,
+    blocked_capacities: 0, conservative_unresolved_capacities: 0, missing_projected_fx_rates: 0,
+    pending_hold_sensitive_requests: 0, same_day_order_sensitive_requests: 0,
+    generated_recurring_movements: 0, confirmed_future_movements: 0, suppressed_overlap_movements: 0,
+    ambiguous_or_unresolved_forecast_obligations: 0, earliest_full_payment_dates_found: 0, earliest_full_payment_dates_missing: 0,
+  };
+  console.log("Buy or Wait? — baseline financial diagnostics only; no recommendations");
+  console.log("Runtime: " + process.version);
+  for (const id of ids) {
+    counts.requests_processed!++;
+    const result = reconstructState(normalized, id);
+    if (result.state === null) { issues.push(...result.issues); counts.blocked_capacities!++; counts.earliest_full_payment_dates_missing!++; continue; }
+    const forecast = buildForecast(result.state, normalized.fx);
+    const capacity = calculateCapacity(result.state, forecast);
+    issues.push(...capacity.issues);
+    if (capacity.status === "valid") counts.valid_baseline_capacities!++;
+    if (capacity.status === "blocked") counts.blocked_capacities!++;
+    if (capacity.status === "conservative_unresolved") counts.conservative_unresolved_capacities!++;
+    if (capacity.baselineTraces.some((trace) => trace.breaches.length > 0)) counts.baselines_already_below_minimum!++;
+    if (capacity.pendingSensitive) counts.pending_hold_sensitive_requests!++;
+    if (capacity.sameDaySensitive) counts.same_day_order_sensitive_requests!++;
+    counts.missing_projected_fx_rates! += forecast.issues.filter((issue) => /FORECAST_PROJECTED_FX_(MISSING_RATE|WRONG_DIRECTION)$/.test(issue.code)).length;
+    counts.generated_recurring_movements! += forecast.movements.filter((movement) => movement.kind.startsWith("generated_recurring_")).length;
+    counts.confirmed_future_movements! += forecast.movements.filter((movement) => movement.kind === "confirmed_future_commitment").length;
+    counts.suppressed_overlap_movements! += forecast.suppressedMovements.length;
+    counts.ambiguous_or_unresolved_forecast_obligations! += forecast.unresolvedObligations.length;
+    counts[capacity.earliestFullPaymentDate === null ? "earliest_full_payment_dates_missing" : "earliest_full_payment_dates_found"]!++;
+    if (!all || counts.requests_processed === 1) console.log("Horizon: " + forecast.start.toISODateString() + " through " + forecast.end.toISODateString() + " inclusive; policy=" + forecast.policyVersion + "; hash=" + forecast.policyHash + "; recurrence=" + forecast.recurrencePolicyHash);
+    if (!all) {
+      console.log(JSON.stringify({ request_id: id, currency: forecast.currency, status: capacity.status,
+        maximum_immediate_payment: capacity.maximumImmediatePayment?.toExactDecimalString() ?? null,
+        earliest_full_payment_date: capacity.earliestFullPaymentDate?.toISODateString() ?? null,
+        limiting_scenario: capacity.limitingScenario, limiting_date: capacity.limitingCheckpoint?.date.toISODateString() ?? null,
+        limiting_checkpoint: capacity.limitingCheckpoint?.id ?? null, margin: capacity.margin?.toExactDecimalString() ?? null,
+        unresolved_obligations: forecast.unresolvedObligations.length, excluded_credit_claims: forecast.excludedCreditEventIds.length }));
+      for (const trace of capacity.baselineTraces) console.log(JSON.stringify({ pending_scenario: trace.pendingScenario, same_day_order: trace.sameDayOrder,
+        days: trace.days.length, checkpoints: trace.checkpoints.length, minimum_balance: trace.minimumBalance.toExactDecimalString(), breaches: trace.breaches.length }));
+      if (args[0] === "inspect-forecast") for (const movement of [...forecast.movements, ...forecast.suppressedMovements]) console.log(JSON.stringify({
+        movement_id: movement.id, date: movement.date.toISODateString(), kind: movement.kind, operation: movement.operation,
+        amount: movement.amount.toExactDecimalString(), currency: movement.amount.currency, source_currency: movement.original.currency,
+        source_event_ids: movement.sourceEventIds, recurrence_series_id: movement.seriesId,
+        deduplication: movement.deduplication, fx_rate_date: movement.fx?.rateDate?.toISODateString() ?? null,
+      }));
+    }
+  }
+  for (const [key, count] of Object.entries(counts)) console.log(key + ": " + count);
+  console.log("Missing earliest dates include blocked/unresolved requests; they do not prove impossibility. Order sensitivity compares daily checkpoint minima.");
+  const unique = new Map(issues.map((issue) => [JSON.stringify(issue), issue]));
+  const ordered = sortIssues([...unique.values()]);
+  printIssues(ordered);
+  return ordered.some((issue) => issue.severity === "error") ? 1 : 0;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    process.exitCode = args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
+    process.exitCode = ["inspect-forecast", "inspect-capacity", "inspect-capacities"].includes(args[0] ?? "") ? await runForecastInspection(args) : args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
       await runStateInspection(args) : await runInspection(args);
   } catch {
-    console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect, inspect-state, inspect-states, or inspect-recurrence with --dataset <directory> and --request <id> where required; ambiguous paths require an absolute path.");
+    console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect, inspect-state, inspect-states, inspect-recurrence, inspect-forecast, inspect-capacity, or inspect-capacities with --dataset <directory> and --request <id> where required; ambiguous paths require an absolute path.");
     process.exitCode = 1;
   }
 }
