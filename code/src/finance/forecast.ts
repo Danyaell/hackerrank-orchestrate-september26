@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { forecastPolicy, recurrencePolicy, sortIssues } from "../config.js";
+import { forecastPolicy, sensitivityForecastPolicy, recurrencePolicy, sortIssues } from "../config.js";
 import { Money } from "../core/money.js";
 import type { FxIndex } from "../core/fx.js";
 import type { DateOnly } from "../core/dates.js";
@@ -26,7 +26,14 @@ function advance(date: DateOnly, series: RecurrenceSeries): DateOnly {
 }
 const speculativeCredit = /\b(bonus|bonuses|commission|commissions|reimbursement|reimbursements|windfall|lottery|jackpot)\b/;
 
-export function buildForecast(state: FinancialState, fx: FxIndex, analysis: RecurrenceResult = analyzeRecurrence(state), horizonDays: number = forecastPolicy.horizonDays): FinancialForecast {
+export function buildForecast(state: FinancialState, fx: FxIndex, analysis: RecurrenceResult = analyzeRecurrence(state)): FinancialForecast {
+  return constructForecast(state, fx, analysis, forecastPolicy);
+}
+export function buildDiagnosticForecast(state: FinancialState, fx: FxIndex, analysis: RecurrenceResult = analyzeRecurrence(state), horizonDays: number = sensitivityForecastPolicy.horizonDays): FinancialForecast {
+  return constructForecast(state, fx, analysis, { ...sensitivityForecastPolicy, horizonDays, version: horizonDays === sensitivityForecastPolicy.horizonDays ? sensitivityForecastPolicy.version : "custom_diagnostic_horizon_" + horizonDays });
+}
+function constructForecast(state: FinancialState, fx: FxIndex, analysis: RecurrenceResult, policy: { readonly version: string; readonly horizonDays: number; readonly usage: FinancialForecast["policyUsage"] }): FinancialForecast {
+  const horizonDays = policy.horizonDays;
   const issues: ForecastIssue[] = [], movements: ForecastMovement[] = [], suppressed: ForecastMovement[] = [], obligations: ForecastObligation[] = [];
   const excludedCredits = new Set(state.pendingCreditClaims.map((record) => record.event.id));
   const start = state.request.date;
@@ -166,7 +173,7 @@ export function buildForecast(state: FinancialState, fx: FxIndex, analysis: Recu
   for (const movement of movements) { if (ids.has(movement.id)) issue("FORECAST_DUPLICATE_MOVEMENT", "blocking", movement.id, movement.provenance, "Movement identity is duplicated", "event_id"); ids.add(movement.id); }
   const sortedIssues = sortIssues(issues) as readonly ForecastIssue[];
   return Object.freeze({ requestId: state.request.id, userId: state.request.userId, currency: state.profile.homeCurrency, start, end,
-    policyVersion: forecastPolicy.version, policyHash: createHash("sha256").update(JSON.stringify({ ...forecastPolicy, horizonDays })).digest("hex"), recurrencePolicyHash: analysis.policyHash,
+    policyVersion: policy.version, policyUsage: policy.usage, policyHash: createHash("sha256").update(JSON.stringify({ ...forecastPolicy, ...policy })).digest("hex"), recurrencePolicyHash: analysis.policyHash,
     movements: Object.freeze(movements.sort(compare)), suppressedMovements: Object.freeze(suppressed.sort(compare)), unresolvedObligations: Object.freeze(obligations.sort((a, b) => lexical(a.id, b.id))),
     issues: sortedIssues, excludedCreditEventIds: Object.freeze([...excludedCredits].sort(lexical)) });
 }

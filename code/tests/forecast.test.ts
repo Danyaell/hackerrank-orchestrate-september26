@@ -12,9 +12,9 @@ import { buildIndexes } from "../src/data/indexes.js";
 import { normalizeData } from "../src/data/normalize.js";
 import { reconstructState } from "../src/finance/state.js";
 import { analyzeRecurrence } from "../src/finance/recurrence.js";
-import { buildForecast } from "../src/finance/forecast.js";
+import { buildForecast, buildDiagnosticForecast } from "../src/finance/forecast.js";
 import { simulate } from "../src/finance/simulate.js";
-import { calculateCapacity } from "../src/finance/capacity.js";
+import { calculateCapacity, calculateDiagnosticCapacity } from "../src/finance/capacity.js";
 import { fixture, minimalRows } from "./fixtures.js";
 import type { FixtureRows } from "./fixtures.js";
 
@@ -68,12 +68,14 @@ test("ambiguous and inactive expenses are surfaced, never silently omitted as sa
   for (const dates of [["2025-06-01", "2025-06-10", "2025-07-29"], ["2025-01-01", "2025-01-08", "2025-01-15"]]) {
     const { forecast, capacity } = await prepare(context, history(dates));
     assert.equal(capacity.status, "conservative_unresolved"); assert.equal(capacity.maximumImmediatePayment, null);
+    assert.deepEqual(capacity.fullPaymentFeasibility, { status: "not_calculable", date: null, reason: "conservative_unresolved" });
     assert.ok(forecast.issues.some((issue) => issue.code === "FORECAST_UNCERTAIN_EXPENSE_SERIES")); assert.ok(forecast.unresolvedObligations[0]!.provenance.length > 0);
   }
 });
 test("missing debit amount blocks capacity and never creates zero movement", async (context) => {
   const { forecast, capacity } = await prepare(context, [future("unknown", "")]);
   assert.equal(forecast.movements.length, 0); assert.equal(forecast.unresolvedObligations[0]!.knownAmount, null);
+  assert.deepEqual(capacity.fullPaymentFeasibility, { status: "not_calculable", date: null, reason: "blocked" });
   assert.equal(capacity.status, "blocked"); assert.equal(capacity.maximumImmediatePayment, null); assert.equal(capacity.earliestFullPaymentDate, null);
 });
 test("foreign projected recurrence uses each dated directed rate exactly", async (context) => {
@@ -166,11 +168,12 @@ test("debit-first detects an intraday breach hidden by daily closing balance", a
   const debitFirst = simulate(state, forecast, "excludes_holds", "debits_before_credits"), creditFirst = simulate(state, forecast, "excludes_holds", "credits_before_debits");
   assert.equal(text(debitFirst.days[4]!.spendableBalance), "250"); assert.equal(text(debitFirst.days[4]!.minimumBalance), "50");
   assert.equal(creditFirst.breaches.length, 0); assert.ok(debitFirst.breaches.some((point) => point.movement?.sourceEventIds.includes("debit")));
-  assert.equal(capacity.status, "unsafe"); assert.equal(capacity.maximumImmediatePayment, null); assert.equal(capacity.sameDaySensitive, true);
+  assert.equal(capacity.status, "baseline_unsafe"); assert.equal(capacity.maximumImmediatePayment, null); assert.equal(capacity.sameDaySensitive, true);
 });
 test("baseline already below minimum cannot be repaired by a future purchase date", async (context) => {
   const { capacity } = await prepare(context, [], (rows) => { rows.financial_profiles[0]!.current_available_balance = "99"; });
-  assert.equal(capacity.status, "unsafe"); assert.equal(text(capacity.margin), "-1"); assert.equal(capacity.earliestFullPaymentDate, null);
+  assert.equal(capacity.status, "baseline_unsafe"); assert.equal(text(capacity.margin), "-1"); assert.equal(capacity.earliestFullPaymentDate, null);
+  assert.equal(capacity.fullPaymentFeasibility.reason, "baseline_unsafe"); assert.equal(capacity.incrementalCapacity.status, "not_calculable");
 });
 test("exact immediate capacity passes at the boundary and fails by one small decimal increment", async (context) => {
   const { state, forecast, capacity } = await prepare(context, [future("bill", "0.2")], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100.5"; });
@@ -185,34 +188,66 @@ test("capacity is uncapped when the requested amount is lower; earliest full pay
 test("requested amount above all horizon capacity has no full-payment date", async (context) => {
   const { capacity } = await prepare(context, [], (rows) => { rows.requests[0]!.requested_amount = "1000"; });
   assert.equal(text(capacity.maximumImmediatePayment), "900"); assert.equal(capacity.earliestFullPaymentDate, null);
+  assert.equal(capacity.status, "valid"); assert.equal(capacity.fullPaymentFeasibility.reason, "no_full_payment_within_horizon");
 });
 test("later full payment cannot rely on that day's credit arriving before its debit phase", async (context) => {
   const { capacity } = await prepare(context, [future("salary", "200", "2025-08-02", { direction: "credit", event_type: "income" })], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100"; });
   assert.equal(text(capacity.maximumImmediatePayment), "0"); assert.equal(capacity.earliestFullPaymentDate!.toISODateString(), "2025-08-03");
+  assert.equal(capacity.incrementalCapacity.status, "zero_incremental_capacity"); assert.equal(capacity.status, "valid");
+});
+test("resolved zero incremental capacity differs from unavailable data and preserves null-date reason", async (context) => {
+  const { capacity } = await prepare(context, [], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100"; });
+  assert.equal(capacity.status, "valid"); assert.equal(capacity.baselineBreached, false);
+  assert.equal(capacity.incrementalCapacity.status, "zero_incremental_capacity"); assert.equal(text(capacity.incrementalCapacity.amount), "0");
+  assert.deepEqual(capacity.fullPaymentFeasibility, { status: "no_full_payment_within_horizon", date: null, reason: "no_full_payment_within_horizon" });
+});
+test("production commands cannot select a sensitivity horizon flag", async (context) => {
+  const { input } = await prepare(context);
+  const main = fileURLToPath(new URL("../src/main.js", import.meta.url));
+  for (const command of ["inspect-capacity", "inspect-capacities"]) {
+    const cli = spawnSync(process.execPath, [main, command, "--dataset", input.directory, ...(command === "inspect-capacity" ? ["--request", "purchase-alpha"] : []), "--horizon", "through_day_90_sensitivity_only"], { encoding: "utf8" });
+    assert.equal(cli.status, 1); assert.ok(cli.stderr.includes("CLI_ERROR"));
+  }
+  const defaultCli = spawnSync(process.execPath, [main, "inspect-capacities", "--dataset", input.directory], { encoding: "utf8" });
+  assert.equal(defaultCli.status, 0); assert.ok(defaultCli.stdout.includes("through 2025-10-29 inclusive; policy=inclusive_90_dates_v1"));
+  assert.ok(!defaultCli.stdout.includes("through_day_90_sensitivity_only"));
+  const sensitivityCli = spawnSync(process.execPath, [main, "inspect-horizon-sensitivity", "--dataset", input.directory], { encoding: "utf8" });
+  assert.equal(sensitivityCli.status, 0); assert.ok(sensitivityCli.stdout.includes("HORIZON_COMPARISON"));
 });
 test("earliest full payment is independent of preferences and completion deadline", async (context) => {
   const alter = (rows: FixtureRows) => { rows.financial_profiles[0]!.current_available_balance = "100"; rows.financial_profiles[0]!.payment_methods_user_will_consider = "installments"; rows.financial_profiles[0]!.max_installment_months = "3"; rows.requests[0]!.desired_completion_date = "2025-08-01"; };
   const { capacity } = await prepare(context, [future("salary", "200", "2025-08-02", { direction: "credit", event_type: "income" })], alter);
   assert.equal(capacity.earliestFullPaymentDate!.toISODateString(), "2025-08-03");
 });
-test("horizon includes request date and day plus 90, but excludes day plus 91", async (context) => {
-  const { state, data, forecast } = await prepare(context, [future("today", "1", "2025-08-01"), future("end", "1", "2025-10-30"), future("outside", "1", "2025-10-31")]);
-  assert.equal(forecastPolicy.horizonDays, 90); assert.equal(forecast.end.toISODateString(), "2025-10-30"); assert.equal(forecast.movements.length, 2);
-  assert.equal(simulate(state, forecast, "excludes_holds", "debits_before_credits").days.length, 91);
-  const short = buildForecast(state, data.fx, analyzeRecurrence(state), 0); assert.notEqual(short.policyHash, forecast.policyHash); assert.equal(short.movements.length, 1);
+test("default horizon includes offsets zero through 89 and excludes day 90", async (context) => {
+  const { state, data, forecast, capacity } = await prepare(context, [future("today", "1", "2025-08-01"), future("end", "2", "2025-10-29"), future("outside", "3", "2025-10-30")]);
+  assert.equal(forecastPolicy.horizonDays, 89); assert.equal(forecast.policyVersion, "inclusive_90_dates_v1");
+  assert.equal(forecast.end.toISODateString(), "2025-10-29"); assert.equal(forecast.movements.length, 2);
+  assert.equal(simulate(state, forecast, "excludes_holds", "debits_before_credits").days.length, 90);
+  assert.equal(text(capacity.maximumImmediatePayment), "897");
+  const sensitivity = buildDiagnosticForecast(state, data.fx);
+  assert.equal(sensitivity.policyVersion, "through_day_90_sensitivity_only");
+  assert.equal(sensitivity.movements.length, 3); assert.equal(calculateDiagnosticCapacity(state, sensitivity).baselineTraces[0]!.days.length, 91);
+  assert.equal(text(calculateDiagnosticCapacity(state, sensitivity).maximumImmediatePayment), "894");
+  const rejected = calculateCapacity(state, sensitivity);
+  assert.equal(rejected.status, "blocked"); assert.equal(rejected.maximumImmediatePayment, null);
+  assert.ok(rejected.issues.some((issue) => issue.code === "CAPACITY_NON_PRODUCTION_HORIZON"));
+  const short = buildDiagnosticForecast(state, data.fx, analyzeRecurrence(state), 0); assert.notEqual(short.policyHash, forecast.policyHash); assert.equal(short.movements.length, 1);
 });
 test("full payment on final horizon date is found; a final-day credit cannot support same-day early payment", async (context) => {
-  const { capacity } = await prepare(context, [future("income", "100", "2025-10-29", { direction: "credit", event_type: "income" })], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100"; });
-  assert.equal(capacity.earliestFullPaymentDate!.toISODateString(), "2025-10-30");
-  const { capacity: tooLate } = await prepare(context, [future("income", "100", "2025-10-30", { direction: "credit", event_type: "income" })], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100"; });
+  const { capacity } = await prepare(context, [future("income", "100", "2025-10-28", { direction: "credit", event_type: "income" })], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100"; });
+  assert.equal(capacity.earliestFullPaymentDate!.toISODateString(), "2025-10-29");
+  const { capacity: tooLate, state, data } = await prepare(context, [future("income", "100", "2025-10-29", { direction: "credit", event_type: "income" })], (rows) => { rows.financial_profiles[0]!.current_available_balance = "100"; });
   assert.equal(tooLate.earliestFullPaymentDate, null);
+  assert.equal(tooLate.fullPaymentFeasibility.reason, "no_full_payment_within_horizon");
+  assert.equal(calculateDiagnosticCapacity(state, buildDiagnosticForecast(state, data.fx)).earliestFullPaymentDate!.toISODateString(), "2025-10-30");
 });
 test("suffix pruning agrees with exhaustive injected simulation at every candidate date", async (context) => {
   for (const amount of ["50", "100", "300"]) {
     const { state, data } = await prepare(context, [future("income", "200", "2025-08-02", { direction: "credit", event_type: "income", category: "salary" }), future("bill", "50", "2025-08-04")], (rows) => {
       rows.financial_profiles[0]!.current_available_balance = "150"; rows.requests[0]!.requested_amount = amount;
     });
-    const forecast = buildForecast(state, data.fx, analyzeRecurrence(state), 7), result = calculateCapacity(state, forecast);
+    const forecast = buildDiagnosticForecast(state, data.fx, analyzeRecurrence(state), 7), result = calculateDiagnosticCapacity(state, forecast);
     let expected: string | null = null;
     for (let day = 0; day <= 7; day++) {
       const value = state.request.date.addDays(day), injection = { id: "oracle", date: value, amount: state.request.amount.negate(), source: state.request.source };

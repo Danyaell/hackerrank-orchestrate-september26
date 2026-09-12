@@ -4,12 +4,13 @@ import { parseDatasetArgument, parseStateArguments, productionFiles, sortIssues 
 import { loadProduction } from "./data/load.js";
 import { buildIndexes } from "./data/indexes.js";
 import type { InspectionResult, Issue, TableName } from "./domain.js";
-import type { FinancialState, StateResult } from "./domain.js";
+import type { BaselineCapacity, FinancialState, StateResult } from "./domain.js";
+import { Money } from "./core/money.js";
 import { normalizeData } from "./data/normalize.js";
 import { reconstructState } from "./finance/state.js";
 import { analyzeRecurrence, ExactRatio } from "./finance/recurrence.js";
-import { buildForecast } from "./finance/forecast.js";
-import { calculateCapacity } from "./finance/capacity.js";
+import { buildForecast, buildDiagnosticForecast } from "./finance/forecast.js";
+import { calculateCapacity, calculateDiagnosticCapacity } from "./finance/capacity.js";
 
 export function printReport(result: InspectionResult, mode: string, extraFiles: readonly string[] = []): void {
   console.log("Buy or Wait? — " + mode + " (raw structure only)");
@@ -140,15 +141,17 @@ export async function runRecurrenceInspection(args: readonly string[]): Promise<
 }
 
 export async function runForecastInspection(args: readonly string[]): Promise<number> {
-  const all = args[0] === "inspect-capacities";
+  const sensitivity = args[0] === "inspect-horizon-sensitivity";
+  const all = args[0] === "inspect-capacities" || sensitivity;
   const { datasetDirectory, requestId } = parseStateArguments(args.slice(1), !all);
   const inspection = await buildIndexes(await loadProduction(datasetDirectory), datasetDirectory);
   if (inspection.issues.some((issue) => issue.severity === "error")) { printReport(inspection, "blocking ingestion diagnostics"); return 1; }
   const normalized = normalizeData(inspection);
   const ids = all ? [...normalized.requests.keys()].sort() : [requestId!];
   const issues: Issue[] = [];
+  const comparisons: { id: string; production: BaselineCapacity; diagnostic: BaselineCapacity; extraDayMovements: readonly string[] }[] = [];
   const counts: Record<string, number> = {
-    requests_processed: 0, valid_baseline_capacities: 0, baselines_already_below_minimum: 0,
+    requests_processed: 0, valid_baseline_capacities: 0, baseline_unsafe_capacities: 0, zero_incremental_capacities: 0, no_full_payment_within_horizon: 0, baselines_already_below_minimum: 0,
     blocked_capacities: 0, conservative_unresolved_capacities: 0, missing_projected_fx_rates: 0,
     pending_hold_sensitive_requests: 0, same_day_order_sensitive_requests: 0,
     generated_recurring_movements: 0, confirmed_future_movements: 0, suppressed_overlap_movements: 0,
@@ -160,10 +163,20 @@ export async function runForecastInspection(args: readonly string[]): Promise<nu
     counts.requests_processed!++;
     const result = reconstructState(normalized, id);
     if (result.state === null) { issues.push(...result.issues); counts.blocked_capacities!++; counts.earliest_full_payment_dates_missing!++; continue; }
-    const forecast = buildForecast(result.state, normalized.fx);
+    const recurrence = analyzeRecurrence(result.state);
+    const forecast = buildForecast(result.state, normalized.fx, recurrence);
     const capacity = calculateCapacity(result.state, forecast);
+    if (sensitivity) {
+      const diagnosticForecast = buildDiagnosticForecast(result.state, normalized.fx, recurrence);
+      const diagnostic = calculateDiagnosticCapacity(result.state, diagnosticForecast);
+      comparisons.push({ id, production: capacity, diagnostic, extraDayMovements: diagnosticForecast.movements.filter((movement) => movement.date.compare(forecast.end) > 0).map((movement) => movement.id) });
+      issues.push(...diagnostic.issues);
+    }
     issues.push(...capacity.issues);
     if (capacity.status === "valid") counts.valid_baseline_capacities!++;
+    if (capacity.status === "baseline_unsafe") counts.baseline_unsafe_capacities!++;
+    if (capacity.incrementalCapacity.status === "zero_incremental_capacity") counts.zero_incremental_capacities!++;
+    if (capacity.fullPaymentFeasibility.status === "no_full_payment_within_horizon") counts.no_full_payment_within_horizon!++;
     if (capacity.status === "blocked") counts.blocked_capacities!++;
     if (capacity.status === "conservative_unresolved") counts.conservative_unresolved_capacities!++;
     if (capacity.baselineTraces.some((trace) => trace.breaches.length > 0)) counts.baselines_already_below_minimum!++;
@@ -180,6 +193,8 @@ export async function runForecastInspection(args: readonly string[]): Promise<nu
       console.log(JSON.stringify({ request_id: id, currency: forecast.currency, status: capacity.status,
         maximum_immediate_payment: capacity.maximumImmediatePayment?.toExactDecimalString() ?? null,
         earliest_full_payment_date: capacity.earliestFullPaymentDate?.toISODateString() ?? null,
+        incremental_capacity_status: capacity.incrementalCapacity.status, full_payment_status: capacity.fullPaymentFeasibility.status,
+        earliest_date_reason: capacity.fullPaymentFeasibility.reason, baseline_breached: capacity.baselineBreached,
         limiting_scenario: capacity.limitingScenario, limiting_date: capacity.limitingCheckpoint?.date.toISODateString() ?? null,
         limiting_checkpoint: capacity.limitingCheckpoint?.id ?? null, margin: capacity.margin?.toExactDecimalString() ?? null,
         unresolved_obligations: forecast.unresolvedObligations.length, excluded_credit_claims: forecast.excludedCreditEventIds.length }));
@@ -194,6 +209,7 @@ export async function runForecastInspection(args: readonly string[]): Promise<nu
     }
   }
   for (const [key, count] of Object.entries(counts)) console.log(key + ": " + count);
+  if (sensitivity) printHorizonComparison(comparisons);
   console.log("Missing earliest dates include blocked/unresolved requests; they do not prove impossibility. Order sensitivity compares daily checkpoint minima.");
   const unique = new Map(issues.map((issue) => [JSON.stringify(issue), issue]));
   const ordered = sortIssues([...unique.values()]);
@@ -201,10 +217,48 @@ export async function runForecastInspection(args: readonly string[]): Promise<nu
   return ordered.some((issue) => issue.severity === "error") ? 1 : 0;
 }
 
+function printHorizonComparison(rows: readonly { id: string; production: BaselineCapacity; diagnostic: BaselineCapacity; extraDayMovements: readonly string[] }[]): void {
+  const category = (result: BaselineCapacity): string => result.status !== "valid" ? result.status : result.fullPaymentFeasibility.status === "no_full_payment_within_horizon" ? "no_full_payment_within_horizon" : "valid";
+  const differentAmount = (a: Money | null, b: Money | null): boolean => a === null || b === null ? a !== b : !a.equals(b);
+  const altered = rows.filter((row) => differentAmount(row.production.maximumImmediatePayment, row.diagnostic.maximumImmediatePayment));
+  const dates = rows.filter((row) => (row.production.earliestFullPaymentDate?.toISODateString() ?? null) !== (row.diagnostic.earliestFullPaymentDate?.toISODateString() ?? null));
+  const switches = rows.filter((row) => category(row.production) !== category(row.diagnostic));
+  const transitions: Record<string, number> = {}, diagnosticCounts: Record<string, number> = {};
+  const byCurrency = new Map<string, Money[]>();
+  for (const row of rows) {
+    const key = category(row.production) + " -> " + category(row.diagnostic);
+    transitions[key] = (transitions[key] ?? 0) + 1;
+    diagnosticCounts[row.diagnostic.status] = (diagnosticCounts[row.diagnostic.status] ?? 0) + 1;
+    if (row.production.maximumImmediatePayment !== null && row.diagnostic.maximumImmediatePayment !== null) {
+      const delta = row.diagnostic.maximumImmediatePayment.subtract(row.production.maximumImmediatePayment);
+      const values = byCurrency.get(delta.currency) ?? []; values.push(delta); byCurrency.set(delta.currency, values);
+    }
+  }
+  const median = (values: readonly Money[]): string | null => {
+    if (values.length === 0) return null;
+    const sorted = [...values].sort((a, b) => a.compare(b)), middle = Math.floor(sorted.length / 2);
+    return (sorted.length % 2 === 1 ? sorted[middle]! : sorted[middle - 1]!.add(sorted[middle]!).multiplyByRate("0.5")).toExactDecimalString();
+  };
+  console.log("HORIZON_COMPARISON " + JSON.stringify({ production_policy: "inclusive_90_dates_v1", diagnostic_policy: "through_day_90_sensitivity_only", compared: rows.length,
+    capacity_result_changes: altered.length, comparable_exact_capacity_changes: altered.filter((row) => row.production.maximumImmediatePayment !== null && row.diagnostic.maximumImmediatePayment !== null).length,
+    earliest_date_changes: dates.length, category_switches: switches.length, diagnostic_baseline_counts: diagnosticCounts,
+    diagnostic_earliest_found: rows.filter((row) => row.diagnostic.earliestFullPaymentDate !== null).length,
+    diagnostic_no_full_payment: rows.filter((row) => row.diagnostic.fullPaymentFeasibility.status === "no_full_payment_within_horizon").length,
+    transitions: Object.fromEntries(Object.entries(transitions).sort()), delta_definition: "diagnostic_91_minus_production_90; currencies never combined; null capacities excluded from monetary metrics",
+    deltas_by_currency: Object.fromEntries([...byCurrency].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([currency, values]) => {
+      const zero = Money.fromDecimalString("0", values[0]!.currency), changed = values.filter((value) => !value.isZero()), absolute = values.map((value) => value.compare(zero) < 0 ? value.negate() : value);
+      return [currency, { comparable: values.length, changed: changed.length, maximum_absolute_delta: absolute.reduce((a, b) => a.maximum(b), zero).toExactDecimalString(), median_signed_delta: median(values), median_absolute_delta: median(absolute), median_changed_signed_delta: median(changed) }];
+    })),
+    affected_examples: rows.filter((row) => altered.includes(row) || dates.includes(row) || switches.includes(row)).sort((a, b) => (switches.includes(a) ? 0 : 1) - (switches.includes(b) ? 0 : 1) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).slice(0, 8).map((row) => ({ request_id: row.id,
+      reasons: [differentAmount(row.production.maximumImmediatePayment, row.diagnostic.maximumImmediatePayment) ? "CAPACITY_CHANGED" : null, (row.production.earliestFullPaymentDate?.toISODateString() ?? null) !== (row.diagnostic.earliestFullPaymentDate?.toISODateString() ?? null) ? "EARLIEST_DATE_CHANGED" : null, category(row.production) !== category(row.diagnostic) ? "RESULT_CATEGORY_CHANGED" : null].filter((value) => value !== null),
+      category_90: category(row.production), category_91: category(row.diagnostic), capacity_90: row.production.maximumImmediatePayment?.toExactDecimalString() ?? null,
+      capacity_91: row.diagnostic.maximumImmediatePayment?.toExactDecimalString() ?? null, earliest_reason_90: row.production.fullPaymentFeasibility.reason, earliest_reason_91: row.diagnostic.fullPaymentFeasibility.reason, extra_day_movement_ids: row.extraDayMovements })) }));
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    process.exitCode = ["inspect-forecast", "inspect-capacity", "inspect-capacities"].includes(args[0] ?? "") ? await runForecastInspection(args) : args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
+    process.exitCode = ["inspect-forecast", "inspect-capacity", "inspect-capacities", "inspect-horizon-sensitivity"].includes(args[0] ?? "") ? await runForecastInspection(args) : args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
       await runStateInspection(args) : await runInspection(args);
   } catch {
     console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect, inspect-state, inspect-states, inspect-recurrence, inspect-forecast, inspect-capacity, or inspect-capacities with --dataset <directory> and --request <id> where required; ambiguous paths require an absolute path.");

@@ -290,6 +290,7 @@ export interface ForecastMovement {
 export interface FinancialForecast {
   readonly requestId: string; readonly userId: string; readonly currency: Currency;
   readonly start: DateOnly; readonly end: DateOnly; readonly policyVersion: string; readonly policyHash: string;
+  readonly policyUsage: "production" | "diagnostic_sensitivity_only";
   readonly recurrencePolicyHash: string;
   readonly movements: readonly ForecastMovement[]; readonly suppressedMovements: readonly ForecastMovement[];
   readonly unresolvedObligations: readonly ForecastObligation[]; readonly issues: readonly ForecastIssue[];
@@ -314,7 +315,13 @@ export interface SimulationTrace {
   readonly pendingAccounting: ReadonlyMap<string, { readonly opened: boolean; readonly settled: boolean }>;
 }
 export interface BaselineCapacity {
-  readonly status: "valid" | "unsafe" | "blocked" | "conservative_unresolved";
+  readonly status: "valid" | "baseline_unsafe" | "blocked" | "conservative_unresolved";
+  readonly baselineBreached: boolean;
+  readonly incrementalCapacity: { readonly status: "positive_incremental_capacity" | "zero_incremental_capacity"; readonly amount: Money } |
+    { readonly status: "not_calculable"; readonly amount: null; readonly reason: "baseline_unsafe" | "blocked" | "conservative_unresolved" };
+  readonly fullPaymentFeasibility: { readonly status: "full_payment_supported"; readonly date: DateOnly; readonly reason: "full_payment_supported" } |
+    { readonly status: "no_full_payment_within_horizon"; readonly date: null; readonly reason: "no_full_payment_within_horizon" } |
+    { readonly status: "not_calculable"; readonly date: null; readonly reason: "baseline_unsafe" | "blocked" | "conservative_unresolved" };
   readonly maximumImmediatePayment: Money | null; readonly earliestFullPaymentDate: DateOnly | null;
   readonly baselineTraces: readonly SimulationTrace[]; readonly limitingScenario: string; readonly limitingCheckpoint: BalanceCheckpoint;
   readonly margin: Money; readonly issues: readonly Issue[];

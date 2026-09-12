@@ -24,10 +24,13 @@ export const recurrencePolicy: RecurrencePolicy = Object.freeze({
 });
 
 export const forecastPolicy = Object.freeze({
-  version: "forecast-v1-inclusive-90", horizonDays: 90, inclusiveEnd: true,
+  version: "inclusive_90_dates_v1", horizonDays: 89, inclusiveEnd: true, usage: "production" as const,
   pendingScenarios: Object.freeze(["includes_holds", "excludes_holds"] as const),
   sameDayScenarios: Object.freeze(["debits_before_credits", "credits_before_debits"] as const),
   paymentPhase: "after_opening_reserves_before_all_cash" as const,
+});
+export const sensitivityForecastPolicy = Object.freeze({ ...forecastPolicy,
+  version: "through_day_90_sensitivity_only", horizonDays: 90, usage: "diagnostic_sensitivity_only" as const,
 });
 
 function locateProjectRoot(): string {

@@ -21,7 +21,8 @@
     "test:forecast": "node --test dist/tests/forecast.test.js",
     "inspect:forecast": "node dist/src/main.js inspect-forecast",
     "inspect:capacity": "node dist/src/main.js inspect-capacity",
-    "inspect:capacities": "node dist/src/main.js inspect-capacities"
+    "inspect:capacities": "node dist/src/main.js inspect-capacities",
+    "inspect:horizon-sensitivity": "node dist/src/main.js inspect-horizon-sensitivity"
   },
   "dependencies": {
     "csv-parse": "7.0.2",
