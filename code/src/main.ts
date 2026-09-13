@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDatasetArgument, parseStateArguments, productionFiles, sortIssues } from "./config.js";
+import { parseDatasetArgument, parseStateArguments, planPolicy, productionFiles, sortIssues } from "./config.js";
+import { createHash } from "node:crypto";
 import { loadProduction } from "./data/load.js";
 import { buildIndexes } from "./data/indexes.js";
 import type { InspectionResult, Issue, TableName } from "./domain.js";
@@ -11,6 +12,63 @@ import { reconstructState } from "./finance/state.js";
 import { analyzeRecurrence, ExactRatio } from "./finance/recurrence.js";
 import { buildForecast, buildDiagnosticForecast } from "./finance/forecast.js";
 import { calculateCapacity, calculateDiagnosticCapacity } from "./finance/capacity.js";
+import { selectPlans } from "./finance/plans.js";
+import { actionText } from "./finance/spending.js";
+import type { InternalPaymentPlan } from "./domain.js";
+
+function planMetadata(plan: InternalPaymentPlan): object {
+  return { id: plan.id, method: plan.method, option_id: plan.optionId, currency: plan.totalPaid.currency,
+    total_paid: plan.totalPaid.toExactDecimalString(), financing_fee: plan.financingFee.toExactDecimalString(),
+    payments: plan.payments.map((payment) => ({ date: payment.date.toISODateString(), amount: payment.amount.toExactDecimalString() })),
+    changes: plan.changes.map((change) => ({ action: actionText(change), series_id: change.seriesId, source_currency: change.amount?.currency ?? null })) };
+}
+
+export async function runPlanInspection(args: readonly string[]): Promise<number> {
+  const all = args[0] === "inspect-plan-summary", verbose = args[0] === "inspect-plan-candidates";
+  const { datasetDirectory, requestId } = parseStateArguments(args.slice(1), !all);
+  const inspection = await buildIndexes(await loadProduction(datasetDirectory), datasetDirectory);
+  if (inspection.issues.some((issue) => issue.severity === "error")) { printReport(inspection, "blocking ingestion diagnostics"); return 1; }
+  const data = normalizeData(inspection), ids = all ? [...data.requests.keys()].sort() : [requestId!];
+  const counts: Record<string, number> = { requests_processed: 0, selected_plans: 0, no_selected_plan: 0, eligible_candidates: 0, valid_candidates: 0, rejected_candidates: 0, eligible_spending_actions: 0, action_sets: 0, selected_with_changes: 0, blocked_inputs: 0, conservative_unresolved_inputs: 0, baseline_unsafe_inputs: 0, invalid_option_diagnostics: 0 };
+  const methods: Record<string, number> = {}, reasons: Record<string, number> = {}, rejections: Record<string, number> = {}, examples: Record<string, string[]> = {}, inputs: Record<string, number> = {}, optionCodes: Record<string, number> = {};
+  let blocking = false;
+  console.log("Buy or Wait? — internal payment-plan diagnostics; no final decisions or output rows");
+  console.log("Runtime: " + process.version + "; policy=" + JSON.stringify(planPolicy) + "; hash=" + createHash("sha256").update(JSON.stringify(planPolicy)).digest("hex"));
+  for (const id of ids) {
+    counts.requests_processed!++;
+    const reconstructed = reconstructState(data, id);
+    if (reconstructed.state === null) { blocking = true; counts.blocked_inputs!++; counts.no_selected_plan!++; for (const issue of reconstructed.issues) inputs[issue.code] = (inputs[issue.code] ?? 0) + 1; if (!all) printIssues(reconstructed.issues); continue; }
+    const state = reconstructed.state, recurrence = analyzeRecurrence(state), forecast = buildForecast(state, data.fx, recurrence);
+    const result = selectPlans(state, forecast, recurrence, data.fx, data.paymentOptions.filter((option) => option.requestId === id));
+    counts.eligible_candidates! += result.eligibleCandidates.length; counts.valid_candidates! += result.validCandidates.length;
+    counts.rejected_candidates! += result.rejectedCandidates.length; counts.eligible_spending_actions! += result.search.eligibleActions; counts.action_sets! += result.search.actionSets;
+    counts.invalid_option_diagnostics! += result.optionIssues.length;
+    for (const issue of result.optionIssues) optionCodes[issue.code] = (optionCodes[issue.code] ?? 0) + 1;
+    for (const issue of result.baseline.issues) inputs[issue.code] = (inputs[issue.code] ?? 0) + 1;
+    if (result.baseline.status === "blocked") { counts.blocked_inputs!++; blocking = true; }
+    if (result.baseline.status === "conservative_unresolved") counts.conservative_unresolved_inputs!++;
+    if (result.baseline.status === "baseline_unsafe") counts.baseline_unsafe_inputs!++;
+    if (result.selected) {
+      counts.selected_plans!++; methods[result.selected.method] = (methods[result.selected.method] ?? 0) + 1;
+      if (result.selected.changes.length > 0) counts.selected_with_changes!++;
+    } else counts.no_selected_plan!++;
+    for (const reason of result.absenceReasons) { reasons[reason] = (reasons[reason] ?? 0) + 1; const list = examples[reason] ?? []; if (list.length < 3) list.push(id); examples[reason] = list; }
+    for (const candidate of result.rejectedCandidates) for (const issue of candidate.issues) rejections[issue.code] = (rejections[issue.code] ?? 0) + 1;
+    if (!all) {
+      console.log(JSON.stringify({ request_id: id, baseline_status: result.baseline.status, baseline_safe_to_pay: result.baselineSafeToPay?.toExactDecimalString() ?? null,
+        eligible: result.eligibleCandidates.length, valid: result.validCandidates.length, rejected: result.rejectedCandidates.length, search: result.search,
+        selected: result.selected ? planMetadata(result.selected) : null, absence_reasons: result.absenceReasons, ranking_trace: result.rankingTrace,
+        option_issues: result.optionIssues, spending_issues: result.spendingIssues }));
+      for (const candidate of result.validCandidates.filter((candidate) => verbose || candidate.plan.id === result.selected?.id)) console.log(JSON.stringify({ plan: planMetadata(candidate.plan), validation: candidate.validation.scenarios.map((scenario) => ({ pending: scenario.pending, ordering: scenario.ordering, safe: scenario.safe, minimum: scenario.minimum.toExactDecimalString(), breaches: scenario.breaches.length })) }));
+      if (verbose) for (const candidate of result.rejectedCandidates) console.log(JSON.stringify({ rejected_plan: candidate.plan ? planMetadata(candidate.plan) : null, method: candidate.method, option_id: candidate.optionId, issues: candidate.issues,
+        scenarios: candidate.validation?.scenarios.map((scenario) => ({ pending: scenario.pending, ordering: scenario.ordering, safe: scenario.safe, minimum: scenario.minimum.toExactDecimalString(), breaches: scenario.breaches.length })) ?? [] }));
+    }
+  }
+  const ordered = (record: Record<string, unknown>): object => Object.fromEntries(Object.entries(record).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+  console.log("PLAN_SUMMARY " + JSON.stringify({ counts, selected_methods: ordered(methods), absence_reasons: ordered(reasons), rejection_codes: ordered(rejections), input_issue_codes: ordered(inputs), option_issue_codes: ordered(optionCodes), absence_examples: ordered(examples) }));
+  console.log(blocking ? "Result: BLOCKING INPUTS REPORTED; no safe plans for those requests" : "Result: SUCCESS; absence of a plan is reported explicitly");
+  return blocking ? 1 : 0;
+}
 
 export function printReport(result: InspectionResult, mode: string, extraFiles: readonly string[] = []): void {
   console.log("Buy or Wait? — " + mode + " (raw structure only)");
@@ -258,10 +316,10 @@ function printHorizonComparison(rows: readonly { id: string; production: Baselin
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    process.exitCode = ["inspect-forecast", "inspect-capacity", "inspect-capacities", "inspect-horizon-sensitivity"].includes(args[0] ?? "") ? await runForecastInspection(args) : args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
+    process.exitCode = ["inspect-plans", "inspect-plan-candidates", "inspect-plan-summary"].includes(args[0] ?? "") ? await runPlanInspection(args) : ["inspect-forecast", "inspect-capacity", "inspect-capacities", "inspect-horizon-sensitivity"].includes(args[0] ?? "") ? await runForecastInspection(args) : args[0] === "inspect-recurrence" ? await runRecurrenceInspection(args.slice(1)) : args[0] === "inspect-state" || args[0] === "inspect-states" ?
       await runStateInspection(args) : await runInspection(args);
   } catch {
-    console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect, inspect-state, inspect-states, inspect-recurrence, inspect-forecast, inspect-capacity, or inspect-capacities with --dataset <directory> and --request <id> where required; ambiguous paths require an absolute path.");
+    console.error("CLI_ERROR: invalid arguments or unexpected inspection failure. Use inspect, inspect-state, inspect-states, inspect-recurrence, inspect-forecast, inspect-capacity, inspect-capacities, inspect-plans, inspect-plan-candidates, or inspect-plan-summary with --dataset <directory> and --request <id> where required; ambiguous paths require an absolute path.");
     process.exitCode = 1;
   }
 }

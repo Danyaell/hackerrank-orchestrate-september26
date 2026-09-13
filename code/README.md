@@ -1,6 +1,6 @@
-# Buy or Wait? — Slices 1–4
+# Buy or Wait? — Slices 1–5
 
-This package validates raw CSV structure and relationships, normalizes exact financial values, reconstructs supplied financial state, evaluates historical recurrence candidates, and constructs baseline financial forecasts and scenario traces. **No recommendation engine or final prediction generator exists yet.**
+This package validates raw CSV structure and relationships, normalizes exact financial values, reconstructs supplied financial state, evaluates historical recurrence candidates, constructs baseline forecasts and scenario traces, and validates and ranks internal payment plans. **No final affordability classification, explanation or prediction generator exists yet.**
 
 ## Requirements and installation
 
@@ -16,6 +16,7 @@ npm --prefix code test
 npm --prefix code run test:ingestion
 npm --prefix code run test:recurrence
 npm --prefix code run test:forecast
+npm --prefix code run test:plans
 ~~~
 
 The lockfile pins all dependency versions. Runtime dependencies are zod (schemas), csv-parse (CSV parsing), and decimal.js (exact money operations). Development dependencies are TypeScript 6 and Node 24 type definitions. Tests use node:test and node:assert/strict. Build before running tests or inspection commands. No AI credentials or network access are needed after dependencies are installed; a populated npm cache also permits npm --prefix code ci --offline --no-audit --no-fund.
@@ -129,11 +130,33 @@ For valid baselines, earliest full-payment feasibility searches the inclusive ho
 
 The all-request command continues through every request, aggregates blockers and returns status 1 if any blocking error exists. Warning-only unresolved diagnostics return status 0 without claiming a safe result. Baseline-breach counts include breached traces even when blocked/unresolved takes status precedence. Pending sensitivity means the snapshot hypotheses change spendable traces; same-day sensitivity means they change at least one daily checkpoint minimum, even if the global limiting checkpoint is unchanged. Missing projected FX counts occurrences, not requests. Only strictly dated directed supplied FX is used; no live, latest-date or reciprocal fallback is available.
 
+## Internal payment-plan diagnostics
+
+~~~text
+npm --prefix code run inspect:plans -- --dataset ../dataset --request <request_id>
+npm --prefix code run inspect:plan-candidates -- --dataset ../dataset --request <request_id>
+npm --prefix code run inspect:plan-summary -- --dataset ../dataset
+~~~
+
+These commands use the same production reader. They report internal plans, candidate rejections, exact totals, scenario minima and ranking keys without producing final output rows. Rejected simulated candidates retain their scenario results. Expected method/offer/safety rejections are structured warnings; blocking financial inputs still cause exit status 1, and never produce a safe plan. The all-request summary reports issue-code counts and a deterministic small sample of IDs for each absence reason. Baseline capacity and earliest full-payment date are calculated once, before optional changes, and remain unchanged in the selection result.
+
+Canonical options expose method, count and day frequency, in addition to dates, exact Money terms and source provenance. Counts and frequencies are bigint, so a validated but oversized integer cannot lose precision; only horizon-bounded day offsets become JavaScript numbers. Expanded installments preserve supplied dates, equal payment amounts, fees and counts. The exact sum must equal the supplied total, and that total must equal requested principal plus financing fee. No adjusted final installment is invented. Full payment today, wait, and partial payment need no offer row. Ingestion still checks the dataset contract requiring supplied options; the plan generator itself has no such dependency for those three methods.
+
+Full payment today requires full-payment acceptance and deadline compliance. Wait requires acceptance of full payment and the unchanged baseline's known later date. Partial payment requires request permission and user acceptance, positive baseline capacity below requested price, and exactly that capacity today plus the remainder on the unchanged baseline earliest full-payment date. The complete schedule is always simulated; a date hint alone cannot establish safety. Installments require an owned valid supplied option, acceptance, horizon/deadline compliance, and explicit duration permission. All candidates must maintain the minimum at every checkpoint in every required pending-hold and intraday scenario. A resolved baseline breach may be repaired by permitted savings only if complete simulation proves it; blocked or conservative-unresolved input cannot be repaired by plan generation.
+
+The versioned `payment_plans_v1` configuration uses conservative `count_and_calendar_cap`: payment count must not exceed max_installment_months, and the last payment must be no later than request date plus that many anchored calendar months. Month-end anchoring uses DateOnly's existing non-drifting primitive. `calendar_cap_only` is a named alternative comparator for calibration/tests, not the selected default. Diagnostics print the selected comparator and configuration hash. This interpretation remains provisional and can reject short schedules with many payments.
+
+Spending actions require an active supported recurring expense, owned settled historical support, appropriate flexibility, explicit category permission, and a non-protected category. The latest supporting settlement/event date, then opaque event ID, determines the anchor. Fixed cannot change; reducible only reduces; stoppable only stops; reducible_or_stoppable allows either. A reduction uses the maximum supplied supporting floor and requires a supplied floor on every supporting record. An explicitly reported zero floor remains zero; an absent floor never becomes zero. Reduction amounts are in the series' source currency and converted on each occurrence's date using supplied directed FX. Historical facts, pending exposures and supplied future commitments are untouched. Changes begin **strictly after request date** and apply only to generated recurrence expenses throughout the forecast horizon.
+
+Search retains baseline candidates and every compatible action set up to three actions, with no duplicate series or anchor. Supplied-floor reductions dominate larger reductions on the same series: they cost the same and cannot worsen any future balance. Both stop and reduction alternatives remain when allowed; they cannot combine on one series. Actions with no effect anywhere in the horizon are excluded. Savings after purchase completion remain relevant to maintaining future minimum balances, so they are retained. No arbitrary search-size truncation is used, and the diagnostic reference recurrence estimate is never used for safety.
+
+Only fully valid plans are ranked, in this exact order: deadline completion, no changes, lowest exact total paid, earlier first date, fewer payments, then lowest option ID. Null option IDs sort **after concrete IDs**, only at that sixth criterion. Canonical serialized internal plan data resolves any remaining tie; there is no extra method preference or preference for fewer spending actions. IDs are hashes of canonical plan properties. Ranking traces expose the keys and first differing criterion. Absence reasons distinguish input blockers, unresolved liabilities, no eligible method, no safe candidate, deadline, preference and invalid offers. These are internal diagnostics, not final affordability statuses.
+
 ## Current limitations
 
-This package does not generate payment plans, expand installments, select payment methods, change spending, classify affordability, extract evidence, score solved answers, or write final predictions. Safety is conditional on the supplied facts and provisional recurrence policy, not a guarantee against unknown expenses. Unbounded liabilities remain unresolved. Image validation does not decode PNGs. Readonly maps are a TypeScript API boundary rather than runtime immutable map implementations. Linux execution has not yet been verified directly. Recurrence cannot establish cancellations, source continuity, or same-purpose amendments from unparsed evidence; source records do not provide historical revision timestamps.
+This package does not classify affordability, generate final explanations, extract evidence, score solved answers, or write final predictions. Safety is conditional on the supplied facts and provisional recurrence policy, not a guarantee against unknown expenses. Unbounded liabilities remain unresolved. Image validation does not decode PNGs. Readonly maps are a TypeScript API boundary rather than runtime immutable map implementations. Linux execution has not yet been verified directly. Recurrence cannot establish cancellations, source continuity, or same-purpose amendments from unparsed evidence; source records do not provide historical revision timestamps. Strict offer arithmetic may reject supplied rounded equal installments that do not exactly sum to the stated total. Reduction-floor and installment-duration interpretations are explicit conservative policies, not empirically established evidence.
 
-Non-blocking technical debt: Money's large accepted serialization scale/precision bounds must be reduced before an untrusted caller controls scale. Canonical payment options must expose method, payment count and frequency explicitly before Slice 5. Neither behavior is changed by this slice.
+Non-blocking technical debt: Money's large accepted serialization scale/precision bounds must be reduced before an untrusted caller controls scale. Canonical option method/count/frequency terms are now exposed; no money, FX or ingestion behavior was changed for this addition.
 
 The unused Python starter and evaluation files are preserved. Tests generate small isolated synthetic datasets in OS temporary directories and remove them afterward; the participant dataset is never modified. The isolation tests use unreadable sample/template locations and inspect the compiled production import graph.
 

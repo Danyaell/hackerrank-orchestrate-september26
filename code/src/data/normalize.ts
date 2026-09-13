@@ -64,6 +64,8 @@ export function normalizeData(input: InspectionResult): NormalizedData {
     const currency = request.amount.currency;
     paymentOptions.push(Object.freeze({
       id: row.data.payment_option_id, requestId: row.data.request_id,
+      method: row.data.payment_method, numberOfPayments: BigInt(row.data.number_of_payments),
+      paymentFrequencyDays: row.data.payment_frequency_days === null ? null : BigInt(row.data.payment_frequency_days),
       paymentAmount: Money.fromNonNegativeDecimalString(row.data.payment_amount, currency),
       financingFee: Money.fromNonNegativeDecimalString(row.data.financing_fee, currency),
       totalPayableAmount: Money.fromNonNegativeDecimalString(row.data.total_payable_amount, currency),

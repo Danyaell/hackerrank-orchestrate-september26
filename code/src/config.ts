@@ -32,6 +32,12 @@ export const forecastPolicy = Object.freeze({
 export const sensitivityForecastPolicy = Object.freeze({ ...forecastPolicy,
   version: "through_day_90_sensitivity_only", horizonDays: 90, usage: "diagnostic_sensitivity_only" as const,
 });
+export const planPolicy = Object.freeze({
+  version: "payment_plans_v1", installmentDurationComparator: "count_and_calendar_cap" as "count_and_calendar_cap" | "calendar_cap_only",
+  spendingEffectiveDate: "strictly_after_request_date", reductionFloor: "maximum_supplied_supporting_floor",
+  reductionSearch: "supplied_floor_dominates_higher_reductions", maxChanges: 3,
+  nullOptionOrder: "after_concrete_ids", rankingVersion: "specified_lexicographic_v1",
+});
 
 function locateProjectRoot(): string {
   let directory = dirname(fileURLToPath(import.meta.url));

@@ -213,7 +213,7 @@ test("production import graph cannot reach audit, evaluation or completed-output
   await visit(main);
   assert.deepEqual([...visited].map((file) => relativeToSource(file)).sort(), [
     "config.js", "core/dates.js", "core/fx.js", "core/money.js", "data/indexes.js", "data/load.js",
-    "data/normalize.js", "finance/capacity.js", "finance/forecast.js", "finance/recurrence.js", "finance/simulate.js", "finance/state.js", "main.js", "schemas.js",
+    "data/normalize.js", "finance/capacity.js", "finance/forecast.js", "finance/options.js", "finance/plans.js", "finance/recurrence.js", "finance/simulate.js", "finance/spending.js", "finance/state.js", "main.js", "schemas.js",
   ]);
 });
 

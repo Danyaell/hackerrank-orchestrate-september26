@@ -113,6 +113,9 @@ export interface CanonicalEvent {
 export interface CanonicalPaymentOption {
   readonly id: string;
   readonly requestId: string;
+  readonly method: PaymentOption["payment_method"];
+  readonly numberOfPayments: bigint;
+  readonly paymentFrequencyDays: bigint | null;
   readonly paymentAmount: Money;
   readonly financingFee: Money;
   readonly totalPayableAmount: Money;
@@ -326,4 +329,43 @@ export interface BaselineCapacity {
   readonly baselineTraces: readonly SimulationTrace[]; readonly limitingScenario: string; readonly limitingCheckpoint: BalanceCheckpoint;
   readonly margin: Money; readonly issues: readonly Issue[];
   readonly pendingSensitive: boolean; readonly sameDaySensitive: boolean;
+}
+
+export type PlanMethod = "full_payment" | "wait" | "partial_payment" | "installments";
+export interface DatedPayment { readonly date: DateOnly; readonly amount: Money }
+export interface SpendingAction {
+  readonly kind: "stop" | "reduce_to"; readonly anchorEventId: string; readonly seriesId: string;
+  readonly amount: Money | null; readonly provenance: readonly Provenance[];
+}
+export interface InternalPaymentPlan {
+  readonly id: string; readonly requestId: string; readonly method: PlanMethod;
+  readonly optionId: string | null; readonly payments: readonly DatedPayment[];
+  readonly financingFee: Money; readonly totalPaid: Money; readonly changes: readonly SpendingAction[];
+  readonly provenance: readonly Provenance[];
+}
+export interface PlanIssue extends Issue {
+  readonly stage: "eligibility" | "safety" | "input"; readonly candidateId: string | null;
+  readonly optionId: string | null; readonly seriesId: string | null;
+}
+export interface PlanValidation {
+  readonly valid: boolean; readonly issues: readonly PlanIssue[];
+  readonly scenarios: readonly { readonly pending: PendingScenario; readonly ordering: SameDayOrder; readonly safe: boolean;
+    readonly minimum: Money; readonly breaches: readonly BalanceCheckpoint[] }[];
+  readonly changedMovementIds: readonly string[];
+}
+export interface RejectedPlanCandidate {
+  readonly plan: InternalPaymentPlan | null; readonly method: PlanMethod; readonly optionId: string | null;
+  readonly issues: readonly PlanIssue[];
+  readonly validation?: PlanValidation;
+}
+export interface PlanSelection {
+  readonly baseline: BaselineCapacity; readonly baselineSafeToPay: Money | null;
+  readonly eligibleCandidates: readonly InternalPaymentPlan[];
+  readonly rejectedCandidates: readonly RejectedPlanCandidate[];
+  readonly validCandidates: readonly { readonly plan: InternalPaymentPlan; readonly validation: PlanValidation }[];
+  readonly selected: InternalPaymentPlan | null;
+  readonly rankingTrace: readonly { readonly planId: string; readonly keys: readonly (string | number | boolean | null)[]; readonly firstDifferenceFromNext: number | null }[];
+  readonly absenceReasons: readonly ("no_eligible_payment_method" | "no_safe_candidate" | "blocked_input" | "conservative_unresolved_liability" | "deadline" | "preference" | "invalid_option" | "zero_requested_amount")[];
+  readonly spendingIssues: readonly PlanIssue[]; readonly optionIssues: readonly PlanIssue[];
+  readonly search: { readonly eligibleActions: number; readonly actionSets: number; readonly pruning: string };
 }
